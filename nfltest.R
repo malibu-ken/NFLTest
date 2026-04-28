@@ -4,70 +4,68 @@ library(nflplotR)
 library(dplyr)
 library(ggplot2)
 
-# Load Chiefs @ Rams
-kcrams <- load_pbp(2018) |>
-  filter(game_id == "2018_11_KC_LA")
+#Load 2025 play by play info and join with combine information
+rosters_2025 <- load_rosters(2025) %>%
+  distinct(gsis_id)
 
+players_bridge <- load_players() %>%
+  filter(!is.na(gsis_id), !is.na(pfr_id)) %>%
+  distinct(pfr_id, .keep_all = TRUE) %>%
+  select(gsis_id, pfr_id, display_name, position)
 
-kc_skill_positions <- load_rosters(seasons = 2018) |>
+combine_with_gsis <- load_combine() %>%
+  left_join(players_bridge, by = "pfr_id")
+
+combine_2025_players <- combine_with_gsis %>%
+  semi_join(rosters_2025,by = "gsis_id")
+
+combine_2025_skill <- combine_2025_players %>%
+  filter(position %in% c("WR", "TE", "RB", "FB"))
+
+pbp <- load_pbp(2025) %>%
+  filter(play_type == "pass",
+         season_type == "REG")
+
+rcvrs <- load_players() %>%
+  filter(position %in% c("WR", "TE", "RB", "FB"))
+
+full_pbp <- pbp %>%
+  left_join(rcvrs, by = c("receiver_player_id" = "gsis_id")) %>%
+  filter(!is.na(receiver_player_id))
+
+player_2025_stats <- full_pbp %>%
   filter(
-    team == "KC",
-    position %in% c("WR", "TE", "RB")
-  ) |>
-  select(gsis_id, position)
+    season == 2025,
+    play_type == "pass",
+    !is.na(receiver_player_id)
+  ) %>%
+  group_by(receiver_player_id) %>%
+  summarise(
+    nfl_season = 2025,
+    targets = n(),                                   # receiver appeared as target
+    receptions = sum(complete_pass == 1),            # completed to that receiver
+    yards = sum(receiving_yards, na.rm = TRUE),
+    .groups = "drop"
+  )
 
+combine_clean <- combine_2025_players %>%
+  rename(
+    combine_season = season)
 
+final_df <- player_2025_stats %>%
+  left_join(combine_clean, by = c("receiver_player_id" = "gsis_id")) %>%
+  filter(position %in% c("WR", "TE", "RB", "FB"))
 
-mahomes_comp <- kcrams |>
-  filter(
-    passer_player_id == "00-0033873",   # Patrick Mahomes
-    complete_pass == 1,
-    !is.na(receiver_player_id),
-    !is.na(yards_gained)
-  ) |>
-  left_join(
-    kc_skill_positions,
-    by = c("receiver_player_id" = "gsis_id")
-  ) |>
-  mutate(is_td = touchdown == 1)
+#Cleaning up df - converting height to inches
+final_df <- final_df %>%
+  mutate(height_inches =
+      as.numeric(sub("-.*$", "", ht)) * 12 +     # feet → inches
+      as.numeric(sub("^.*-", "", ht))             # add remaining inches
+  ) %>% select(-ht)
 
+#Modeling data
 
+#First check: 40 yard dash
+df_forty <- final_df %>% filter(!is.na(forty))
 
-ggplot(
-mahomes_comp,
-aes(
-  x = reorder(receiver_player_name, yards_gained, max),
-  y = yards_gained,
-  color = position,
-  shape = is_td
-)
-) +
-  geom_jitter(
-    width = 0.25,
-    alpha = 0.75,
-    size = 3
-  ) +
-  scale_color_manual(
-    values = c(
-      RB = "red",
-      TE = "gold",
-      WR = "green"
-    ),
-    name = "Receiver Position"
-  ) +
-  scale_shape_manual(
-    values = c(
-      `FALSE` = 16,  # circle
-      `TRUE`  = 17   # triangle
-    ),
-    labels = c("Non TD", "Touchdown"),
-    name = "Play Result"
-  ) +
-  labs(
-    title = "Patrick Mahomes Completions vs Rams (2018)",
-    subtitle = "Yards Gained by Receiver\nColor = Position, Shape = Touchdown",
-    x = "Receiver",
-    y = "Yards Gained"
-  ) +
-  coord_flip()
-
+#This is a work in progress.
