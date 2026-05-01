@@ -3,10 +3,17 @@ library(nflreadr)
 library(nflplotR)
 library(dplyr)
 library(ggplot2)
+library(MASS)
 
-#Load 2025 play by play info and join with combine information
+#LOADING PLAYER DATA FOR PASSING PLAYS IN 2025 REGULAR SEASON
+
+
+#Load 2025 GSIS ID information
 rosters_2025 <- load_rosters(2025) %>%
   distinct(gsis_id)
+
+#Creating bridge table to bring all player information under same ID system
+#Rosters and players have different ID systems, combining under common IDs
 
 players_bridge <- load_players() %>%
   filter(!is.na(gsis_id), !is.na(pfr_id)) %>%
@@ -21,6 +28,13 @@ combine_2025_players <- combine_with_gsis %>%
 
 combine_2025_skill <- combine_2025_players %>%
   filter(position %in% c("WR", "TE", "RB", "FB"))
+
+#Renaming combine_season to season as we're assuming combine season is draft season.
+combine_clean <- combine_2025_players %>% rename(combine_season = season)
+
+
+#Loading general play by play data with added player info including position
+#For this and future queries we are limiting to PASS plays to make scope manageable.
 
 pbp <- load_pbp(2025) %>%
   filter(play_type == "pass",
@@ -37,7 +51,7 @@ player_2025_stats <- full_pbp %>%
   filter(
     season == 2025,
     play_type == "pass",
-    !is.na(receiver_player_id)
+    !is.na(receiver_player_id) #Again, pass plays only - must have a receiver in the play
   ) %>%
   group_by(receiver_player_id) %>%
   summarise(
@@ -48,9 +62,6 @@ player_2025_stats <- full_pbp %>%
     .groups = "drop"
   )
 
-combine_clean <- combine_2025_players %>%
-  rename(
-    combine_season = season)
 
 final_df <- player_2025_stats %>%
   left_join(combine_clean, by = c("receiver_player_id" = "gsis_id")) %>%
@@ -63,9 +74,283 @@ final_df <- final_df %>%
       as.numeric(sub("^.*-", "", ht))             # add remaining inches
   ) %>% select(-ht)
 
-#Modeling data
+#Adding AGE to df as well
+players_age <- load_players() %>%
+  select(gsis_id, birth_date)
 
-#First check: 40 yard dash
+season_start <- as.Date("2025-09-04")
+
+final_df <- final_df %>%
+  left_join(players_age, by = c("receiver_player_id" = "gsis_id")) %>%
+  mutate(
+    birth_date = as.Date(birth_date),
+    age_2025 = as.numeric(difftime(season_start, birth_date, units = "days")) / 365.25
+  )
+
+
+#Additionally - adding yards per reception to df as this efficiency metric is useful
+final_df <- final_df %>%
+  mutate(ypr = yards/receptions)
+
+
+#MODELING DATA
+
+#We now having combine data attached to regular season statistics for all eligible
+#receivers in the 2025 regular season. Re: combine - not all players did all
+#exercises. We must condition on non-missing values moving forward.
+
+
+#Example: 40-yard dash
 df_forty <- final_df %>% filter(!is.na(forty))
+fast_players <- df_forty %>% select(display_name, forty, position, ypr, receptions, yards) %>%
+  arrange(forty)
+fast_players
 
-#This is a work in progress.
+#Those dudes are fast!
+
+
+#Some example analyses from here:
+
+#1. Linear regression model of receptions:
+lm_rc <- lm(receptions ~ forty, data = df_forty)
+summary(lm_rc)
+
+#2. Yards Per Reception:
+lm_ypr <- lm(ypr ~ forty, data = df_forty)
+summary(lm_ypr)
+
+#3. 40 times vs. receptions holding targets fixed:
+lm_rec_controlled <- lm(receptions ~ forty + targets, data=df_forty)
+summary(lm_rec_controlled)
+
+#Diving a bit deeper into this one, forty estimate is 8.70234, i.e.
+#For each second ADDED to the 40 there is to be expected 8.7 more
+#receptions in the regular season, holding targets constant. 
+
+#This suggests an advantage of player archetype rather than a speed advantage.
+
+#Filtering now by position:
+by_pos <- lm(receptions ~  0 + position + forty:position, data = df_forty)
+summary(by_pos)
+#There's not much for fullbacks here, so it's showing up as NA across the board.
+
+#WR: A slower 40 time by one second leads to an average of 9 more receptions.
+#However, this is more descriptive than causal so we'll circle back to this.
+#Also of note: p-value for positionWR:forty is .68! So not very strong.
+
+#RB: A *faster* 40 of 1 second implies almost *54* more receptions.
+#Again, descriptive rather than causal - faster RBs are part of passing game.
+#Here, p-value *is* statistically significant.
+
+#TE: A faster 40 of 1 second implies 31 more receptions on the season. However,
+#p-value is relatively high and this is a less sensitive metric than it was
+#for RBs.
+
+#Zoning in on WR: let's look instead at 3-cone drill for agility since
+#speed isn't a smoking gun metric to determine receptions.
+
+df_wr <- final_df %>%
+  filter(position == "WR", !is.na(cone), receptions > 0) %>%
+  mutate(yards_per_target = yards / targets, catch_rate = receptions / targets)
+
+lm_ypt <- lm(yards_per_target ~ cone, data = df_wr)
+summary(lm_ypt)
+
+lm_cr <- lm(catch_rate ~ cone, data = df_wr)
+summary(lm_cr)
+
+#Unfortunately, same story, as there is almost no correlation here
+#and p-values are not statistically significant in any way. This
+#still shows up even when accounting for age.
+
+ypr_ageadjust <- lm(yards_per_target ~ cone + age_2025, data = df_wr)
+summary(ypr_ageadjust)
+
+cr_ageadjust <- lm(catch_rate ~ cone + age_2025, data = df_wr)
+summary(cr_ageadjust)
+
+#Since we've already explored a few bivariate models, let's move towards
+#a fuller model to see what we can do.
+
+#Defining full model for stepwise AIC
+
+full_wr_model <- lm(
+  yards_per_target ~ forty + cone + shuttle + vertical + age_2025, data = df_wr)
+summary(full_wr_model)
+
+#Again, initial returns not great but we can keep moving here.
+
+
+null_wr_model <- lm(yards_per_target ~ 1, data = df_wr)
+summary(null_wr_model)
+
+#Initiating stepwise selection in both directions
+
+step_wr_model <- stepAIC(
+  null_wr_model,scope = list(
+    lower = null_wr_model,
+    upper = full_wr_model),
+  direction = "both",
+  trace = TRUE)
+
+summary(step_wr_model)
+formula(step_wr_model)
+
+#>formula(step_wr_model)
+#>yards_per_target ~ 1
+#>mfw
+
+#So this is a problem of scope and noise. One season is very noisy,
+#Combine data is a pretty crude instrument to determine results
+#downstream, even when accounting for age. We're going to move
+#to add extra signal here and align the time-scale of these variables.
+
+#REFINING INITIAL MODELING OF WR DATA
+
+#WR Efficiency by season:
+
+pbp_all <- load_pbp(2020:2025) %>% filter(play_type == "pass",season_type == "REG")
+
+wr_stats_by_season <- pbp_all %>%
+  left_join(load_players() %>% dplyr::select(gsis_id, position),
+    by = c("receiver_player_id" = "gsis_id")) %>%
+  filter(position == "WR") %>% group_by(receiver_player_id, season) %>%
+  summarise(targets = n(), receptions = sum(complete_pass == 1, na.rm = TRUE),
+    yards = sum(receiving_yards, na.rm = TRUE),.groups = "drop") %>%
+  filter(targets >= 20) %>%  #Setting arbitrary cutoff for sample size
+  mutate(ypt = yards / targets, catch_rate = receptions / targets)
+
+#Collapse to player averages for players with at least 2 seasons:
+
+wr_efficiency_avg <- wr_stats_by_season %>%
+  group_by(receiver_player_id) %>% summarise(
+    seasons = n(),avg_ypt = mean(ypt), avg_catch_rate = mean(catch_rate),
+    avg_targets = mean(targets),.groups = "drop") %>%filter(seasons >= 2)
+
+#merging age into dataframe
+wr_panel <- wr_efficiency_avg %>%
+  left_join(final_df %>% filter(position == "WR") %>%
+      dplyr::select(
+        receiver_player_id,
+        forty, cone, shuttle, vertical, display_name,
+        age_2025),by = "receiver_player_id")
+
+wr_stats_by_season <- wr_stats_by_season %>%
+  left_join(
+    player_names,
+    by = c("receiver_player_id" = "gsis_id")
+  )
+
+#Modeling: baseline efficiency
+
+lm_panel <- lm(
+  avg_ypt ~ cone + shuttle + vertical + forty + age_2025,
+  data = wr_panel
+)
+summary(lm_panel)
+
+vars_needed <- c(
+  "avg_ypt",
+  "forty",
+  "cone",
+  "shuttle",
+  "vertical",
+  "age_2025",
+  "display_name"
+)
+
+wr_panel_complete <- wr_panel %>%
+  dplyr::select(all_of(vars_needed), receiver_player_id) %>%
+  tidyr::drop_na()
+
+
+wr_panel_complete <- wr_panel_complete %>%
+  left_join(
+    player_names,
+    by = c("receiver_player_id" = "gsis_id")
+  )
+
+
+null_panel <- lm(avg_ypt ~ 1, data = wr_panel_complete)
+
+full_panel <- lm(
+  avg_ypt ~ forty + cone + shuttle + vertical + age_2025,
+  data = wr_panel_complete
+)
+
+step_panel <- stepAIC(
+  null_panel,
+  scope = list(
+    lower = null_panel,
+    upper = full_panel
+  ),
+  direction = "both",
+  trace = TRUE
+)
+
+summary(step_panel)
+formula(step_panel)
+
+
+#Draft capital
+
+wr_draft <- load_combine() %>%
+  dplyr::filter(pos == "WR") %>%
+  dplyr::mutate(
+    draft_ovr_clean = ifelse(
+      is.na(draft_ovr),
+      300,      # undrafted proxy
+      draft_ovr
+    )
+  ) %>%
+  dplyr::select(pfr_id, draft_ovr_clean)
+
+wr_draft_bridge <- wr_draft %>%
+  left_join(
+    players_bridge %>%
+      dplyr::select(pfr_id, gsis_id),
+    by = "pfr_id"
+  ) %>%
+  dplyr::select(
+    receiver_player_id = gsis_id,
+    draft_ovr_clean
+  )
+
+wr_panel_complete <- wr_panel_complete %>%
+  mutate(
+    draft_ovr_clean = coalesce(draft_ovr_clean.x, draft_ovr_clean.y)
+  ) %>%
+  dplyr::select(-draft_ovr_clean.x, -draft_ovr_clean.y)
+
+lm_perf <- lm(
+  avg_ypt ~ cone + shuttle + vertical + forty + age_2025 + draft_ovr_clean,
+  data = wr_panel_complete
+)
+
+summary(lm_perf)
+
+lm_draft <- lm(
+  draft_ovr_clean ~ forty + cone + shuttle + vertical,
+  data = wr_panel_complete
+)
+
+summary(lm_draft)
+
+library(mediation)
+
+med <- mediate(
+  model.m = lm(
+    draft_ovr_clean ~ forty + cone,
+    data = wr_panel_complete
+  ),
+  model.y = lm(
+    avg_ypt ~ draft_ovr_clean + forty + cone,
+    data = wr_panel_complete
+  ),
+  treat = "forty",
+  mediator = "draft_ovr_clean",
+  boot = TRUE,
+  sims = 1000
+)
+
+summary(med)
