@@ -2,7 +2,7 @@
 title: "NFLTest-RMD"
 author: "Samuel Shomette"
 date: "2026-05-04"
-output: pdf_document
+output: github_document
 ---
 
 ```{r setup, include=FALSE}
