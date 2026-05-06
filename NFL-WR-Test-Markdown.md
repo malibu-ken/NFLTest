@@ -11,8 +11,6 @@ rosters_2025 <- load_rosters(2025) %>%
 
 Creating bridge table to bring all player information under same ID system. Rosters and players have different ID systems, combining under common IDs.
 
-Additionally, Renaming combine_season to season as we're assuming combine season is draft season. combine_clean <- combine_2025_players %>% rename(combine_season = season)
-
 ``` r
 players_bridge <- load_players() %>%
   filter(!is.na(gsis_id), !is.na(pfr_id)) %>%
@@ -392,10 +390,9 @@ summary(full_wr_model)
     ## Multiple R-squared:  0.04052,    Adjusted R-squared:  -0.0467 
     ## F-statistic: 0.4646 on 5 and 55 DF,  p-value: 0.8009
 
+Again, initial returns not great but we can keep moving here.
+
 ``` r
-#Again, initial returns not great but we can keep moving here.
-
-
 null_wr_model <- lm(yards_per_target ~ 1, data = df_wr)
 summary(null_wr_model)
 ```
@@ -467,11 +464,6 @@ formula(step_wr_model)
 
     ## yards_per_target ~ 1
 
-``` r
-#>formula(step_wr_model)
-#>yards_per_target ~ 1
-#>mfw
-```
 
 So this is a problem of scope and noise. One season is very noisy,
 combine data is a pretty crude instrument to determine results
