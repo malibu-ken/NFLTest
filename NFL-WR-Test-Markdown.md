@@ -1,7 +1,5 @@
 NFLTest-RMD
 ================
-Samuel Shomette
-2026-05-04
 
 ## Loading Player Data
 
@@ -11,9 +9,9 @@ rosters_2025 <- load_rosters(2025) %>%
   distinct(gsis_id)
 ```
 
-Creating bridge table to bring all player information under same ID
-system. Rosters and players have different ID systems, combining under
-common IDs.
+Creating bridge table to bring all player information under same ID system. Rosters and players have different ID systems, combining under common IDs.
+
+Additionally, Renaming combine_season to season as we're assuming combine season is draft season. combine_clean <- combine_2025_players %>% rename(combine_season = season)
 
 ``` r
 players_bridge <- load_players() %>%
@@ -30,9 +28,6 @@ combine_2025_players <- combine_with_gsis %>%
 combine_2025_skill <- combine_2025_players %>%
   filter(position %in% c("WR", "TE", "RB", "FB"))
 
-
-#Renaming combine_season to season as we're assuming combine season is draft season.
-combine_clean <- combine_2025_players %>% rename(combine_season = season)
 ```
 
 Loading general play by play data with added player info including
